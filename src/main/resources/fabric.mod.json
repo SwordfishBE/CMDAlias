@@ -5,12 +5,12 @@
 	"name": "CmdAlias",
 	"description": "Adds configurable server-side command aliases and shortcuts.",
 	"authors": [
-		"Jimmy"
+		"SwordfishBE"
 	],
 	"contact": {
-		"sources": "https://github.com/"
+		"sources": "https://github.com/SwordfishBE/CMDAlias"
 	},
-	"license": "CC0-1.0",
+  "license": "AGPL-3.0",
 	"environment": "*",
 	"entrypoints": {
 		"main": [
