@@ -5,13 +5,18 @@ import com.google.gson.GsonBuilder;
 import com.google.gson.JsonParseException;
 import com.google.gson.annotations.SerializedName;
 import com.mojang.brigadier.CommandDispatcher;
+import com.mojang.brigadier.arguments.ArgumentType;
 import com.mojang.brigadier.arguments.StringArgumentType;
 import com.mojang.brigadier.builder.ArgumentBuilder;
 import com.mojang.brigadier.builder.LiteralArgumentBuilder;
+import com.mojang.brigadier.builder.RequiredArgumentBuilder;
 import com.mojang.brigadier.context.CommandContext;
+import com.mojang.brigadier.suggestion.SuggestionProvider;
 import com.mojang.brigadier.suggestion.Suggestions;
 import com.mojang.brigadier.suggestion.SuggestionsBuilder;
+import com.mojang.brigadier.tree.ArgumentCommandNode;
 import com.mojang.brigadier.tree.CommandNode;
+import com.mojang.brigadier.tree.LiteralCommandNode;
 import com.mojang.brigadier.tree.RootCommandNode;
 import net.fabricmc.loader.api.FabricLoader;
 import net.minecraft.commands.CommandSourceStack;
@@ -90,11 +95,13 @@ public final class AliasManager {
 	public void register(CommandDispatcher<CommandSourceStack> dispatcher) {
 		this.dispatcher = dispatcher;
 		dispatcher.register(buildAdminCommand());
-		aliases.keySet().forEach(this::registerAliasNodeIfPossible);
 	}
 
 	public void setServer(MinecraftServer server) {
 		this.server = server;
+		this.dispatcher = server.getCommands().getDispatcher();
+		aliases.keySet().forEach(this::registerAliasNodeIfPossible);
+		syncCommands();
 	}
 
 	public void clearServer() {
@@ -237,15 +244,8 @@ public final class AliasManager {
 
 	private LiteralArgumentBuilder<CommandSourceStack> buildAliasTree(String alias, String baseCommand, CommandNode<CommandSourceStack> targetNode) {
 		LiteralArgumentBuilder<CommandSourceStack> aliasBuilder = Commands.literal(alias)
-			.requires(targetNode.getRequirement());
-
-		if (targetNode.getCommand() != null) {
-			aliasBuilder.executes(context -> executeAliasedInput(context, alias, baseCommand));
-		}
-
-		if (targetNode.getRedirect() != null) {
-			aliasBuilder.forward(targetNode.getRedirect(), targetNode.getRedirectModifier(), targetNode.isFork());
-		}
+			.requires(targetNode.getRequirement())
+			.executes(context -> executeAliasedInput(context, alias, baseCommand));
 
 		for (CommandNode<CommandSourceStack> child : targetNode.getChildren()) {
 			aliasBuilder.then(cloneAliasNode(child, alias, baseCommand));
@@ -255,10 +255,9 @@ public final class AliasManager {
 	}
 
 	private ArgumentBuilder<CommandSourceStack, ?> cloneAliasNode(CommandNode<CommandSourceStack> node, String alias, String baseCommand) {
-		ArgumentBuilder<CommandSourceStack, ?> builder = node.createBuilder();
-		if (node.getCommand() != null) {
-			builder.executes(context -> executeAliasedInput(context, alias, baseCommand));
-		}
+		ArgumentBuilder<CommandSourceStack, ?> builder = createAliasBuilder(node)
+			.requires(node.getRequirement())
+			.executes(context -> executeAliasedInput(context, alias, baseCommand));
 
 		for (CommandNode<CommandSourceStack> child : node.getChildren()) {
 			builder.then(cloneAliasNode(child, alias, baseCommand));
@@ -267,14 +266,34 @@ public final class AliasManager {
 		return builder;
 	}
 
-	private int executeAliasedInput(CommandContext<CommandSourceStack> context, String alias, String baseCommand) {
-		String input = Commands.trimOptionalPrefix(context.getInput());
-		String suffix = "";
-		if (input.length() > alias.length()) {
-			suffix = input.substring(alias.length());
+	private ArgumentBuilder<CommandSourceStack, ?> createAliasBuilder(CommandNode<CommandSourceStack> node) {
+		if (node instanceof LiteralCommandNode<CommandSourceStack> literalNode) {
+			return Commands.literal(literalNode.getLiteral());
 		}
 
-		context.getSource().getServer().getCommands().performPrefixedCommand(context.getSource(), baseCommand + suffix);
+		if (node instanceof ArgumentCommandNode<CommandSourceStack, ?> argumentNode) {
+			return createRequiredArgumentBuilder(argumentNode);
+		}
+
+		throw new IllegalArgumentException("Unsupported command node type for alias cloning: " + node.getClass().getName());
+	}
+
+	@SuppressWarnings({"unchecked", "rawtypes"})
+	private RequiredArgumentBuilder<CommandSourceStack, ?> createRequiredArgumentBuilder(ArgumentCommandNode<CommandSourceStack, ?> argumentNode) {
+		RequiredArgumentBuilder<CommandSourceStack, ?> builder = RequiredArgumentBuilder.argument(argumentNode.getName(), (ArgumentType) argumentNode.getType());
+		SuggestionProvider<CommandSourceStack> suggestions = (SuggestionProvider<CommandSourceStack>) argumentNode.getCustomSuggestions();
+		if (suggestions != null) {
+			builder.suggests(suggestions);
+		}
+
+		return builder;
+	}
+
+	private int executeAliasedInput(CommandContext<CommandSourceStack> context, String alias, String baseCommand) {
+		String input = Commands.trimOptionalPrefix(context.getInput()).trim();
+		String suffix = input.length() > alias.length() ? input.substring(alias.length()).trim() : "";
+		String resolvedCommand = suffix.isEmpty() ? baseCommand : baseCommand + " " + suffix;
+		context.getSource().getServer().getCommands().performPrefixedCommand(context.getSource(), resolvedCommand);
 		return 1;
 	}
 
