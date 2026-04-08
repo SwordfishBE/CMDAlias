@@ -6,6 +6,7 @@ import com.google.gson.JsonParseException;
 import com.google.gson.annotations.SerializedName;
 import com.mojang.brigadier.CommandDispatcher;
 import com.mojang.brigadier.arguments.StringArgumentType;
+import com.mojang.brigadier.builder.ArgumentBuilder;
 import com.mojang.brigadier.builder.LiteralArgumentBuilder;
 import com.mojang.brigadier.context.CommandContext;
 import com.mojang.brigadier.suggestion.Suggestions;
@@ -203,6 +204,12 @@ public final class AliasManager {
 			return;
 		}
 
+		CommandNode<CommandSourceStack> targetNode = findAliasTarget(aliases.get(alias));
+		if (targetNode != null) {
+			dispatcher.register(buildAliasTree(alias, aliases.get(alias), targetNode));
+			return;
+		}
+
 		dispatcher.register(Commands.literal(alias)
 			.executes(context -> executeAlias(context, alias, null))
 			.then(Commands.argument("arguments", StringArgumentType.greedyString())
@@ -226,6 +233,73 @@ public final class AliasManager {
 		}
 
 		return baseCommand + " " + extraArguments.trim();
+	}
+
+	private LiteralArgumentBuilder<CommandSourceStack> buildAliasTree(String alias, String baseCommand, CommandNode<CommandSourceStack> targetNode) {
+		LiteralArgumentBuilder<CommandSourceStack> aliasBuilder = Commands.literal(alias)
+			.requires(targetNode.getRequirement());
+
+		if (targetNode.getCommand() != null) {
+			aliasBuilder.executes(context -> executeAliasedInput(context, alias, baseCommand));
+		}
+
+		if (targetNode.getRedirect() != null) {
+			aliasBuilder.forward(targetNode.getRedirect(), targetNode.getRedirectModifier(), targetNode.isFork());
+		}
+
+		for (CommandNode<CommandSourceStack> child : targetNode.getChildren()) {
+			aliasBuilder.then(cloneAliasNode(child, alias, baseCommand));
+		}
+
+		return aliasBuilder;
+	}
+
+	private ArgumentBuilder<CommandSourceStack, ?> cloneAliasNode(CommandNode<CommandSourceStack> node, String alias, String baseCommand) {
+		ArgumentBuilder<CommandSourceStack, ?> builder = node.createBuilder();
+		if (node.getCommand() != null) {
+			builder.executes(context -> executeAliasedInput(context, alias, baseCommand));
+		}
+
+		for (CommandNode<CommandSourceStack> child : node.getChildren()) {
+			builder.then(cloneAliasNode(child, alias, baseCommand));
+		}
+
+		return builder;
+	}
+
+	private int executeAliasedInput(CommandContext<CommandSourceStack> context, String alias, String baseCommand) {
+		String input = Commands.trimOptionalPrefix(context.getInput());
+		String suffix = "";
+		if (input.length() > alias.length()) {
+			suffix = input.substring(alias.length());
+		}
+
+		context.getSource().getServer().getCommands().performPrefixedCommand(context.getSource(), baseCommand + suffix);
+		return 1;
+	}
+
+	private CommandNode<CommandSourceStack> findAliasTarget(String command) {
+		String normalized = normalizeCommand(command);
+		if (normalized == null || dispatcher == null) {
+			return null;
+		}
+
+		CommandNode<CommandSourceStack> currentNode = dispatcher.getRoot();
+		String withoutSlash = normalized.substring(1);
+		for (String token : withoutSlash.split(" ")) {
+			if (token.isBlank()) {
+				continue;
+			}
+
+			CommandNode<CommandSourceStack> nextNode = currentNode.getChild(token);
+			if (nextNode == null) {
+				return null;
+			}
+
+			currentNode = nextNode;
+		}
+
+		return currentNode;
 	}
 
 	private CompletableFuture<Suggestions> suggestAliases(CommandContext<CommandSourceStack> context, SuggestionsBuilder builder) {
