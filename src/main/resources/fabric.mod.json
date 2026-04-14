@@ -2,7 +2,7 @@
 	"schemaVersion": 1,
 	"id": "cmdalias",
 	"version": "${version}",
-	"name": "CmdAlias",
+	"name": "CMDAlias",
 	"description": "Adds configurable server-side command aliases and shortcuts.",
 	"authors": [
 		"SwordfishBE"
