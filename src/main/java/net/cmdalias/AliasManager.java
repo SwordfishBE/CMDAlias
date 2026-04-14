@@ -1,4 +1,4 @@
-package be.cmda.cmdalias;
+package net.cmdalias;
 
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
