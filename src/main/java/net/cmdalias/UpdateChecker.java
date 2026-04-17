@@ -103,7 +103,6 @@ public final class UpdateChecker {
 
 	private static Optional<VersionCandidate> findLatestVersion(JsonArray versionsArray, String minecraftVersion) {
 		VersionCandidate newestCompatibleRelease = null;
-		VersionCandidate newestRelease = null;
 
 		for (JsonElement element : versionsArray) {
 			if (!element.isJsonObject()) {
@@ -121,10 +120,6 @@ public final class UpdateChecker {
 			}
 
 			VersionCandidate versionCandidate = candidate.get();
-			if (isNewerCandidate(versionCandidate, newestRelease)) {
-				newestRelease = versionCandidate;
-			}
-
 			if (jsonArrayContains(versionObject, "loaders", FABRIC_LOADER)
 				&& jsonArrayContains(versionObject, "game_versions", minecraftVersion)
 				&& isNewerCandidate(versionCandidate, newestCompatibleRelease)) {
@@ -132,7 +127,7 @@ public final class UpdateChecker {
 			}
 		}
 
-		return Optional.ofNullable(newestCompatibleRelease != null ? newestCompatibleRelease : newestRelease);
+		return Optional.ofNullable(newestCompatibleRelease);
 	}
 
 	private static boolean isNewerCandidate(VersionCandidate candidate, VersionCandidate currentBest) {

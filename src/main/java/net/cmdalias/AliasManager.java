@@ -38,6 +38,7 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.TreeMap;
 import java.util.concurrent.CompletableFuture;
+import java.util.function.Predicate;
 
 public final class AliasManager {
 	private static final Gson GSON = new GsonBuilder()
@@ -95,12 +96,17 @@ public final class AliasManager {
 	public void register(CommandDispatcher<CommandSourceStack> dispatcher) {
 		this.dispatcher = dispatcher;
 		dispatcher.register(buildAdminCommand());
+		registerAliases();
 	}
 
 	public void setServer(MinecraftServer server) {
+		CommandDispatcher<CommandSourceStack> currentDispatcher = server.getCommands().getDispatcher();
+		boolean dispatcherChanged = this.dispatcher != currentDispatcher;
 		this.server = server;
-		this.dispatcher = server.getCommands().getDispatcher();
-		aliases.keySet().forEach(this::registerAliasNodeIfPossible);
+		this.dispatcher = currentDispatcher;
+		if (dispatcherChanged) {
+			registerAliases();
+		}
 		syncCommands();
 	}
 
@@ -211,9 +217,9 @@ public final class AliasManager {
 			return;
 		}
 
-		CommandNode<CommandSourceStack> targetNode = findAliasTarget(aliases.get(alias));
-		if (targetNode != null) {
-			dispatcher.register(buildAliasTree(alias, aliases.get(alias), targetNode));
+		AliasTarget target = findAliasTarget(aliases.get(alias));
+		if (target != null) {
+			dispatcher.register(buildAliasTree(alias, aliases.get(alias), target));
 			return;
 		}
 
@@ -242,25 +248,31 @@ public final class AliasManager {
 		return baseCommand + " " + extraArguments.trim();
 	}
 
-	private LiteralArgumentBuilder<CommandSourceStack> buildAliasTree(String alias, String baseCommand, CommandNode<CommandSourceStack> targetNode) {
+	private void registerAliases() {
+		aliases.keySet().forEach(this::registerAliasNodeIfPossible);
+	}
+
+	private LiteralArgumentBuilder<CommandSourceStack> buildAliasTree(String alias, String baseCommand, AliasTarget target) {
+		CommandNode<CommandSourceStack> targetNode = target.node();
 		LiteralArgumentBuilder<CommandSourceStack> aliasBuilder = Commands.literal(alias)
-			.requires(targetNode.getRequirement())
+			.requires(target.requirement())
 			.executes(context -> executeAliasedInput(context, alias, baseCommand));
 
 		for (CommandNode<CommandSourceStack> child : targetNode.getChildren()) {
-			aliasBuilder.then(cloneAliasNode(child, alias, baseCommand));
+			aliasBuilder.then(cloneAliasNode(child, alias, baseCommand, target.requirement()));
 		}
 
 		return aliasBuilder;
 	}
 
-	private ArgumentBuilder<CommandSourceStack, ?> cloneAliasNode(CommandNode<CommandSourceStack> node, String alias, String baseCommand) {
+	private ArgumentBuilder<CommandSourceStack, ?> cloneAliasNode(CommandNode<CommandSourceStack> node, String alias, String baseCommand, Predicate<CommandSourceStack> inheritedRequirement) {
+		Predicate<CommandSourceStack> combinedRequirement = inheritedRequirement.and(node.getRequirement());
 		ArgumentBuilder<CommandSourceStack, ?> builder = createAliasBuilder(node)
-			.requires(node.getRequirement())
+			.requires(combinedRequirement)
 			.executes(context -> executeAliasedInput(context, alias, baseCommand));
 
 		for (CommandNode<CommandSourceStack> child : node.getChildren()) {
-			builder.then(cloneAliasNode(child, alias, baseCommand));
+			builder.then(cloneAliasNode(child, alias, baseCommand, combinedRequirement));
 		}
 
 		return builder;
@@ -297,13 +309,14 @@ public final class AliasManager {
 		return 1;
 	}
 
-	private CommandNode<CommandSourceStack> findAliasTarget(String command) {
+	private AliasTarget findAliasTarget(String command) {
 		String normalized = normalizeCommand(command);
 		if (normalized == null || dispatcher == null) {
 			return null;
 		}
 
 		CommandNode<CommandSourceStack> currentNode = dispatcher.getRoot();
+		Predicate<CommandSourceStack> requirement = source -> true;
 		String withoutSlash = normalized.substring(1);
 		for (String token : withoutSlash.split(" ")) {
 			if (token.isBlank()) {
@@ -315,10 +328,11 @@ public final class AliasManager {
 				return null;
 			}
 
+			requirement = requirement.and(nextNode.getRequirement());
 			currentNode = nextNode;
 		}
 
-		return currentNode;
+		return new AliasTarget(currentNode, requirement);
 	}
 
 	private CompletableFuture<Suggestions> suggestAliases(CommandContext<CommandSourceStack> context, SuggestionsBuilder builder) {
@@ -423,5 +437,8 @@ public final class AliasManager {
 		private StoredAliases(Map<String, String> aliases) {
 			this.aliases = aliases;
 		}
+	}
+
+	private record AliasTarget(CommandNode<CommandSourceStack> node, Predicate<CommandSourceStack> requirement) {
 	}
 }
