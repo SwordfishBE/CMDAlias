@@ -1,0 +1,11 @@
+{
+  "required": true,
+  "package": "net.cmdalias.mixin",
+  "compatibilityLevel": "JAVA_25",
+  "mixins": [
+    "CommandNodeMixin"
+  ],
+  "injectors": {
+    "defaultRequire": 1
+  }
+}

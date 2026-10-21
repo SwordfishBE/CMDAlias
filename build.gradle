@@ -11,6 +11,7 @@ base {
 }
 
 repositories {
+	mavenCentral()
 }
 
 loom {
@@ -25,7 +26,28 @@ dependencies {
 	minecraft "com.mojang:minecraft:${project.minecraft_version}"
 	implementation "net.fabricmc:fabric-loader:${project.loader_version}"
 	implementation "net.fabricmc.fabric-api:fabric-api:${project.fabric_api_version}"
+	testImplementation 'org.junit.jupiter:junit-jupiter:5.14.0'
+	testRuntimeOnly 'org.junit.platform:junit-platform-launcher:1.14.0'
 }
+
+test {
+	useJUnitPlatform()
+}
+
+tasks.register('fabricRegressionTest', JavaExec) {
+	group = 'verification'
+	description = 'Checks alias registration using the actual Fabric mixin transformer.'
+	dependsOn testClasses
+	classpath = sourceSets.test.runtimeClasspath
+	mainClass = 'net.fabricmc.loader.impl.launch.knot.KnotServer'
+	systemProperty 'fabric.development', 'true'
+	workingDir = layout.buildDirectory.dir('fabric-regression').get().asFile
+	doFirst {
+		workingDir.mkdirs()
+	}
+}
+
+check.dependsOn fabricRegressionTest
 
 processResources {
 	inputs.property "version", project.version

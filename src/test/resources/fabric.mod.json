@@ -1,0 +1,15 @@
+{
+  "schemaVersion": 1,
+  "id": "cmdalias_regression_tests",
+  "version": "1.0.0",
+  "name": "CMDAlias Regression Tests",
+  "environment": "server",
+  "entrypoints": {
+    "preLaunch": [
+      "net.cmdalias.AliasFabricRegressionTest"
+    ]
+  },
+  "depends": {
+    "cmdalias": "*"
+  }
+}

@@ -5,19 +5,11 @@ import com.google.gson.GsonBuilder;
 import com.google.gson.JsonParseException;
 import com.google.gson.annotations.SerializedName;
 import com.mojang.brigadier.CommandDispatcher;
-import com.mojang.brigadier.arguments.ArgumentType;
 import com.mojang.brigadier.arguments.StringArgumentType;
-import com.mojang.brigadier.builder.ArgumentBuilder;
 import com.mojang.brigadier.builder.LiteralArgumentBuilder;
-import com.mojang.brigadier.builder.RequiredArgumentBuilder;
 import com.mojang.brigadier.context.CommandContext;
-import com.mojang.brigadier.suggestion.SuggestionProvider;
 import com.mojang.brigadier.suggestion.Suggestions;
 import com.mojang.brigadier.suggestion.SuggestionsBuilder;
-import com.mojang.brigadier.tree.ArgumentCommandNode;
-import com.mojang.brigadier.tree.CommandNode;
-import com.mojang.brigadier.tree.LiteralCommandNode;
-import com.mojang.brigadier.tree.RootCommandNode;
 import net.fabricmc.loader.api.FabricLoader;
 import net.minecraft.commands.CommandSourceStack;
 import net.minecraft.commands.Commands;
@@ -29,29 +21,36 @@ import net.minecraft.server.level.ServerPlayer;
 import java.io.IOException;
 import java.io.Reader;
 import java.io.Writer;
-import java.lang.reflect.Field;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.LinkedHashMap;
-import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.TreeMap;
 import java.util.concurrent.CompletableFuture;
-import java.util.function.Predicate;
 
 public final class AliasManager {
 	private static final Gson GSON = new GsonBuilder()
 		.setPrettyPrinting()
 		.disableHtmlEscaping()
 		.create();
-	private static final List<String> COMMAND_NODE_MAPS = List.of("children", "literals", "arguments");
 
-	private final Path configPath = FabricLoader.getInstance().getConfigDir().resolve(CmdAliasMod.MOD_ID + ".json");
+	private final Path configPath;
 	private final Map<String, String> aliases = new TreeMap<>();
 
-	private CommandDispatcher<CommandSourceStack> dispatcher;
+	private final AliasCommandTree<CommandSourceStack> commandTree = new AliasCommandTree<>((context, command) -> {
+		context.getSource().getServer().getCommands().performPrefixedCommand(context.getSource(), command);
+		return 1;
+	});
 	private MinecraftServer server;
+
+	public AliasManager() {
+		this(FabricLoader.getInstance().getConfigDir().resolve(CmdAliasMod.MOD_ID + ".json"));
+	}
+
+	AliasManager(Path configPath) {
+		this.configPath = configPath;
+	}
 
 	public void load() {
 		aliases.clear();
@@ -94,24 +93,22 @@ public final class AliasManager {
 	}
 
 	public void register(CommandDispatcher<CommandSourceStack> dispatcher) {
-		this.dispatcher = dispatcher;
 		dispatcher.register(buildAdminCommand());
-		registerAliases();
+		commandTree.attach(dispatcher, aliases);
 	}
 
 	public void setServer(MinecraftServer server) {
 		CommandDispatcher<CommandSourceStack> currentDispatcher = server.getCommands().getDispatcher();
-		boolean dispatcherChanged = this.dispatcher != currentDispatcher;
 		this.server = server;
-		this.dispatcher = currentDispatcher;
-		if (dispatcherChanged) {
-			registerAliases();
+		if (!commandTree.isDispatcher(currentDispatcher)) {
+			commandTree.attach(currentDispatcher, aliases);
 		}
 		syncCommands();
 	}
 
 	public void clearServer() {
 		server = null;
+		commandTree.clear();
 	}
 
 	private LiteralArgumentBuilder<CommandSourceStack> buildAdminCommand() {
@@ -134,7 +131,7 @@ public final class AliasManager {
 	}
 
 	private int addAlias(CommandContext<CommandSourceStack> context, String aliasInput, String commandInput) {
-		if (dispatcher == null) {
+		if (!commandTree.isReady()) {
 			context.getSource().sendFailure(Component.literal("Command dispatcher is not ready yet."));
 			return 0;
 		}
@@ -151,9 +148,8 @@ public final class AliasManager {
 			return 0;
 		}
 
-		CommandNode<CommandSourceStack> existingNode = dispatcher.getRoot().getChild(alias);
 		boolean replacingExistingAlias = aliases.containsKey(alias);
-		if (existingNode != null && !replacingExistingAlias) {
+		if (commandTree.hasConflict(alias)) {
 			context.getSource().sendFailure(Component.literal("Cannot register '/" + alias + "' because another command already uses that name."));
 			return 0;
 		}
@@ -163,12 +159,8 @@ public final class AliasManager {
 			return 0;
 		}
 
-		if (replacingExistingAlias) {
-			removeAliasNode(alias);
-		}
-
 		aliases.put(alias, command);
-		registerAliasNodeIfPossible(alias);
+		commandTree.rebuild(aliases);
 		save();
 		syncCommands();
 
@@ -185,7 +177,7 @@ public final class AliasManager {
 		}
 
 		aliases.remove(alias);
-		removeAliasNode(alias);
+		commandTree.rebuild(aliases);
 		save();
 		syncCommands();
 
@@ -207,134 +199,6 @@ public final class AliasManager {
 		return aliases.size();
 	}
 
-	private void registerAliasNodeIfPossible(String alias) {
-		if (dispatcher == null) {
-			return;
-		}
-
-		if (dispatcher.getRoot().getChild(alias) != null) {
-			CmdAliasMod.LOGGER.warn("Skipping alias '/{}' because the command name is already taken", alias);
-			return;
-		}
-
-		AliasTarget target = findAliasTarget(aliases.get(alias));
-		if (target != null) {
-			dispatcher.register(buildAliasTree(alias, aliases.get(alias), target));
-			return;
-		}
-
-		dispatcher.register(Commands.literal(alias)
-			.executes(context -> executeAlias(context, alias, null))
-			.then(Commands.argument("arguments", StringArgumentType.greedyString())
-				.executes(context -> executeAlias(context, alias, StringArgumentType.getString(context, "arguments")))));
-	}
-
-	private int executeAlias(CommandContext<CommandSourceStack> context, String alias, String extraArguments) {
-		String command = aliases.get(alias);
-		if (command == null) {
-			context.getSource().sendFailure(Component.literal("Alias '/" + alias + "' no longer exists."));
-			return 0;
-		}
-
-		context.getSource().getServer().getCommands().performPrefixedCommand(context.getSource(), resolveCommand(command, extraArguments));
-		return 1;
-	}
-
-	private String resolveCommand(String baseCommand, String extraArguments) {
-		if (extraArguments == null || extraArguments.isBlank()) {
-			return baseCommand;
-		}
-
-		return baseCommand + " " + extraArguments.trim();
-	}
-
-	private void registerAliases() {
-		aliases.keySet().forEach(this::registerAliasNodeIfPossible);
-	}
-
-	private LiteralArgumentBuilder<CommandSourceStack> buildAliasTree(String alias, String baseCommand, AliasTarget target) {
-		CommandNode<CommandSourceStack> targetNode = target.node();
-		LiteralArgumentBuilder<CommandSourceStack> aliasBuilder = Commands.literal(alias)
-			.requires(target.requirement())
-			.executes(context -> executeAliasedInput(context, alias, baseCommand));
-
-		for (CommandNode<CommandSourceStack> child : targetNode.getChildren()) {
-			aliasBuilder.then(cloneAliasNode(child, alias, baseCommand, target.requirement()));
-		}
-
-		return aliasBuilder;
-	}
-
-	private ArgumentBuilder<CommandSourceStack, ?> cloneAliasNode(CommandNode<CommandSourceStack> node, String alias, String baseCommand, Predicate<CommandSourceStack> inheritedRequirement) {
-		Predicate<CommandSourceStack> combinedRequirement = inheritedRequirement.and(node.getRequirement());
-		ArgumentBuilder<CommandSourceStack, ?> builder = createAliasBuilder(node)
-			.requires(combinedRequirement)
-			.executes(context -> executeAliasedInput(context, alias, baseCommand));
-
-		for (CommandNode<CommandSourceStack> child : node.getChildren()) {
-			builder.then(cloneAliasNode(child, alias, baseCommand, combinedRequirement));
-		}
-
-		return builder;
-	}
-
-	private ArgumentBuilder<CommandSourceStack, ?> createAliasBuilder(CommandNode<CommandSourceStack> node) {
-		if (node instanceof LiteralCommandNode<CommandSourceStack> literalNode) {
-			return Commands.literal(literalNode.getLiteral());
-		}
-
-		if (node instanceof ArgumentCommandNode<CommandSourceStack, ?> argumentNode) {
-			return createRequiredArgumentBuilder(argumentNode);
-		}
-
-		throw new IllegalArgumentException("Unsupported command node type for alias cloning: " + node.getClass().getName());
-	}
-
-	@SuppressWarnings({"unchecked", "rawtypes"})
-	private RequiredArgumentBuilder<CommandSourceStack, ?> createRequiredArgumentBuilder(ArgumentCommandNode<CommandSourceStack, ?> argumentNode) {
-		RequiredArgumentBuilder<CommandSourceStack, ?> builder = RequiredArgumentBuilder.argument(argumentNode.getName(), (ArgumentType) argumentNode.getType());
-		SuggestionProvider<CommandSourceStack> suggestions = (SuggestionProvider<CommandSourceStack>) argumentNode.getCustomSuggestions();
-		if (suggestions != null) {
-			builder.suggests(suggestions);
-		}
-
-		return builder;
-	}
-
-	private int executeAliasedInput(CommandContext<CommandSourceStack> context, String alias, String baseCommand) {
-		String input = Commands.trimOptionalPrefix(context.getInput()).trim();
-		String suffix = input.length() > alias.length() ? input.substring(alias.length()).trim() : "";
-		String resolvedCommand = suffix.isEmpty() ? baseCommand : baseCommand + " " + suffix;
-		context.getSource().getServer().getCommands().performPrefixedCommand(context.getSource(), resolvedCommand);
-		return 1;
-	}
-
-	private AliasTarget findAliasTarget(String command) {
-		String normalized = normalizeCommand(command);
-		if (normalized == null || dispatcher == null) {
-			return null;
-		}
-
-		CommandNode<CommandSourceStack> currentNode = dispatcher.getRoot();
-		Predicate<CommandSourceStack> requirement = source -> true;
-		String withoutSlash = normalized.substring(1);
-		for (String token : withoutSlash.split(" ")) {
-			if (token.isBlank()) {
-				continue;
-			}
-
-			CommandNode<CommandSourceStack> nextNode = currentNode.getChild(token);
-			if (nextNode == null) {
-				return null;
-			}
-
-			requirement = requirement.and(nextNode.getRequirement());
-			currentNode = nextNode;
-		}
-
-		return new AliasTarget(currentNode, requirement);
-	}
-
 	private CompletableFuture<Suggestions> suggestAliases(CommandContext<CommandSourceStack> context, SuggestionsBuilder builder) {
 		return SharedSuggestionProvider.suggest(aliases.keySet(), builder);
 	}
@@ -346,25 +210,6 @@ public final class AliasManager {
 
 		for (ServerPlayer player : server.getPlayerList().getPlayers()) {
 			server.getCommands().sendCommands(player);
-		}
-	}
-
-	private void removeAliasNode(String alias) {
-		if (dispatcher == null) {
-			return;
-		}
-
-		RootCommandNode<CommandSourceStack> root = dispatcher.getRoot();
-		for (String fieldName : COMMAND_NODE_MAPS) {
-			try {
-				Field field = CommandNode.class.getDeclaredField(fieldName);
-				field.setAccessible(true);
-				@SuppressWarnings("unchecked")
-				Map<String, CommandNode<CommandSourceStack>> nodes = (Map<String, CommandNode<CommandSourceStack>>) field.get(root);
-				nodes.remove(alias);
-			} catch (ReflectiveOperationException exception) {
-				throw new IllegalStateException("Failed to remove alias command node '" + alias + "'", exception);
-			}
 		}
 	}
 
@@ -437,8 +282,5 @@ public final class AliasManager {
 		private StoredAliases(Map<String, String> aliases) {
 			this.aliases = aliases;
 		}
-	}
-
-	private record AliasTarget(CommandNode<CommandSourceStack> node, Predicate<CommandSourceStack> requirement) {
 	}
 }
