@@ -16,10 +16,10 @@ import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
 import net.fabricmc.loader.api.FabricLoader;
 import net.fabricmc.loader.api.Version;
+import net.minecraft.SharedConstants;
 
 public final class UpdateChecker {
 	private static final String PROJECT_ID = "uXcp7SS5";
-	private static final String MINECRAFT_MOD_ID = "minecraft";
 	private static final String FABRIC_LOADER = "fabric";
 	private static final String RELEASE = "release";
 	private static final HttpClient HTTP_CLIENT = HttpClient.newBuilder()
@@ -95,13 +95,12 @@ public final class UpdateChecker {
 			.filter(version -> !version.isBlank());
 	}
 
-	private static Optional<String> currentMinecraftVersion() {
-		return FabricLoader.getInstance().getModContainer(MINECRAFT_MOD_ID)
-			.map(container -> container.getMetadata().getVersion().getFriendlyString())
-			.filter(version -> !version.isBlank());
+	static Optional<String> currentMinecraftVersion() {
+		// Modrinth uses the raw game ID, not Fabric Loader's normalized snapshot version.
+		return Optional.of(SharedConstants.getCurrentVersion().id()).filter(version -> !version.isBlank());
 	}
 
-	private static Optional<VersionCandidate> findLatestVersion(JsonArray versionsArray, String minecraftVersion) {
+	static Optional<VersionCandidate> findLatestVersion(JsonArray versionsArray, String minecraftVersion) {
 		VersionCandidate newestCompatibleRelease = null;
 
 		for (JsonElement element : versionsArray) {
@@ -224,6 +223,6 @@ public final class UpdateChecker {
 		}
 	}
 
-	private record VersionCandidate(String versionNumber, Instant publishedAt) {
+	record VersionCandidate(String versionNumber, Instant publishedAt) {
 	}
 }
